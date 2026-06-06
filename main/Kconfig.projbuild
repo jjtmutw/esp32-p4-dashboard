@@ -1,0 +1,51 @@
+menu "ESP32-P4 Dashboard"
+
+    config DASHBOARD_MQTT_BROKER_URI
+        string "MQTT broker URI"
+        default "mqtt://broker.emqx.io:1883"
+        help
+            Broker used by the dashboard after Wi-Fi is already connected.
+
+    config DASHBOARD_MQTT_STATE_TOPIC
+        string "MQTT state topic"
+        default "JJ/iot/state"
+        help
+            Topic carrying JSON state updates for dashboard controls.
+
+    config DASHBOARD_MQTT_CAMERA_TOPIC
+        string "MQTT camera image topic"
+        default "jj/camera/image"
+        help
+            Topic carrying camera JPEG payloads with image_base64.
+
+    config DASHBOARD_MQTT_SENSOR_TOPIC
+        string "MQTT sensor state topic"
+        default "jj/sensor/state"
+        help
+            Topic carrying sensor JSON, such as temperature and humidity.
+
+    config DASHBOARD_CONFIG_REQUEST_TOPIC
+        string "MQTT dashboard config request topic"
+        default "jj/dashboard/config/request"
+        help
+            Device publishes its device_id and local config version here to request config.json.
+
+    config DASHBOARD_CONFIG_RESPONSE_PREFIX
+        string "MQTT dashboard config response prefix"
+        default "jj/dashboard/config"
+        help
+            The server publishes config JSON to <prefix>/<device_id>.
+
+    config DASHBOARD_CONFIG_ALL_TOPIC
+        string "MQTT dashboard broadcast config topic"
+        default "jj/dashboard/config/all"
+        help
+            Optional broadcast topic for config JSON that still includes a matching device_id.
+
+    config DASHBOARD_HTTP_PUBLISH_URL
+        string "HTTP publish endpoint"
+        default "https://emr.prof-jj.com/mqtt/publish_66.php"
+        help
+            HTTP endpoint used by control buttons.
+
+endmenu

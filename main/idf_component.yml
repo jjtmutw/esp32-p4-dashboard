@@ -1,0 +1,4 @@
+dependencies:
+  espressif/esp_hosted: "2.12.8"
+  espressif/esp_wifi_remote: "1.6.0"
+  waveshare/esp32_p4_wifi6_touch_lcd_4b: "^1.0.2"

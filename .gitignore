@@ -1,0 +1,29 @@
+# Local ESP-IDF/tooling installs
+_esp_idf_*/
+_idf_py_env/
+_pushclone/
+_waveshare_components/
+
+# Generated build output
+build*/
+managed_components/
+dependencies.lock
+
+# Local dependency/cache experiments
+_external_components/
+_component_cache/
+_cmake_*/
+_compile_test/
+debug/
+_local_cleanup/
+
+# Python/editor noise
+__pycache__/
+*.py[cod]
+.codex_home/
+.vscode/
+.idea/
+
+# OS files
+Thumbs.db
+.DS_Store
