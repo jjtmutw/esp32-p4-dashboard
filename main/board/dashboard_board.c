@@ -60,3 +60,8 @@ void dashboard_board_set_brightness(int percent)
     }
     ESP_ERROR_CHECK_WITHOUT_ABORT(bsp_display_brightness_set(percent));
 }
+
+void dashboard_board_set_screen_on(bool on)
+{
+    ESP_ERROR_CHECK_WITHOUT_ABORT(bsp_display_brightness_set(on ? 90 : 0));
+}

@@ -10,3 +10,4 @@ bool dashboard_board_lock(uint32_t timeout_ms);
 void dashboard_board_unlock(void);
 lv_display_t *dashboard_board_display(void);
 void dashboard_board_set_brightness(int percent);
+void dashboard_board_set_screen_on(bool on);

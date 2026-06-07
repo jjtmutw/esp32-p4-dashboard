@@ -6,8 +6,10 @@ _waveshare_components/
 
 # Generated build output
 build*/
-managed_components/
-dependencies.lock
+
+# ESP-IDF component manager output. Board-specific component fixes are stored
+# under component_patches/ and applied during configure/build.
+/managed_components/
 
 # Local dependency/cache experiments
 _external_components/
@@ -16,6 +18,7 @@ _cmake_*/
 _compile_test/
 debug/
 _local_cleanup/
+.publish_tmp/
 
 # Python/editor noise
 __pycache__/

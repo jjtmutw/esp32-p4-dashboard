@@ -8,3 +8,4 @@ void setup_manager_force_portal(void);
 bool setup_manager_is_online(void);
 const char *setup_manager_mqtt_uri(void);
 const char *setup_manager_http_publish_url(void);
+const char *setup_manager_setup_ap_ssid(void);

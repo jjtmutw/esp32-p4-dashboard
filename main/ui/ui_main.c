@@ -8,6 +8,7 @@
 #include "app_config/device_config.h"
 #include "setup/setup_manager.h"
 #include "mqtt/mqtt_client_app.h"
+#include "board/dashboard_board.h"
 #include "esp_log.h"
 
 #include <stdio.h>
@@ -20,11 +21,16 @@ static lv_obj_t *s_wifi_icon;
 static lv_obj_t *s_mqtt_icon;
 static lv_obj_t *s_setup_modal;
 static lv_obj_t *s_settings_status;
+static lv_obj_t *s_screen_power_icon;
+static lv_obj_t *s_screen_wake_layer;
 static uint32_t s_json_update_press_count;
+static bool s_screen_on = true;
 
 static void setup_close_event_cb(lv_event_t *e);
 static void settings_request_config_event_cb(lv_event_t *e);
 static void settings_start_ap_event_cb(lv_event_t *e);
+static void screen_power_event_cb(lv_event_t *e);
+static void screen_wake_event_cb(lv_event_t *e);
 
 static void init_styles(void)
 {
@@ -41,6 +47,14 @@ static void settings_set_status(const char *text, uint32_t color)
     }
     lv_label_set_text(s_settings_status, text);
     lv_obj_set_style_text_color(s_settings_status, lv_color_hex(color), 0);
+}
+
+static void settings_set_setup_ap_status(void)
+{
+    char status[128];
+    snprintf(status, sizeof(status), "Setup AP active: %s / 12345678 / http://192.168.4.1",
+             setup_manager_setup_ap_ssid());
+    settings_set_status(status, 0x46ff8a);
 }
 
 static lv_obj_t *settings_button_create(lv_obj_t *parent, const char *text, int width, lv_align_t align,
@@ -106,7 +120,7 @@ static void setup_modal_open(bool ap_started)
     lv_obj_align(s_settings_status, LV_ALIGN_TOP_LEFT, 0, 188);
 
     if (ap_started) {
-        settings_set_status("Setup AP active: JJ-Dashboard-Setup / 12345678 / http://192.168.4.1", 0x46ff8a);
+        settings_set_setup_ap_status();
     } else if (mqtt_is_connected()) {
         settings_set_status("Ready. MQTT is online.", 0x46ff8a);
     } else {
@@ -127,6 +141,53 @@ static void setup_icon_event_cb(lv_event_t *e)
     if (code == LV_EVENT_RELEASED) {
         button_feedback_beep();
         setup_modal_open(false);
+    }
+}
+
+static void screen_set_on(bool on)
+{
+    if (s_screen_on == on) {
+        return;
+    }
+
+    s_screen_on = on;
+    dashboard_board_set_screen_on(on);
+    if (s_screen_power_icon != NULL) {
+        lv_obj_set_style_text_color(s_screen_power_icon, lv_color_hex(on ? 0x46ff8a : 0x6f8794), 0);
+    }
+}
+
+static void screen_wake_layer_create(void)
+{
+    if (s_screen_wake_layer != NULL) {
+        return;
+    }
+
+    s_screen_wake_layer = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(s_screen_wake_layer);
+    lv_obj_set_size(s_screen_wake_layer, LV_PCT(100), LV_PCT(100));
+    lv_obj_center(s_screen_wake_layer);
+    lv_obj_add_flag(s_screen_wake_layer, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(s_screen_wake_layer, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_bg_opa(s_screen_wake_layer, LV_OPA_TRANSP, 0);
+    lv_obj_add_event_cb(s_screen_wake_layer, screen_wake_event_cb, LV_EVENT_PRESSED, NULL);
+}
+
+static void screen_power_event_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    button_feedback_beep();
+    screen_set_on(false);
+    screen_wake_layer_create();
+}
+
+static void screen_wake_event_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    screen_set_on(true);
+    if (s_screen_wake_layer != NULL) {
+        lv_obj_del(s_screen_wake_layer);
+        s_screen_wake_layer = NULL;
     }
 }
 
@@ -164,7 +225,7 @@ static void settings_start_ap_event_cb(lv_event_t *e)
     LV_UNUSED(e);
     button_feedback_beep();
     setup_manager_force_portal();
-    settings_set_status("Setup AP active: JJ-Dashboard-Setup / 12345678 / http://192.168.4.1", 0x46ff8a);
+    settings_set_setup_ap_status();
 }
 
 void ui_main_set_network_online(bool online)
@@ -193,7 +254,8 @@ void ui_main_set_title(const char *title)
         return;
     }
     lv_label_set_text(s_title_label, title);
-    ui_text_image_apply(s_title_image, s_title_label, &g_dashboard_title_image, LV_ALIGN_TOP_LEFT, 18, 10);
+    lv_obj_align(s_title_label, LV_ALIGN_TOP_MID, 0, 10);
+    ui_text_image_apply(s_title_image, s_title_label, &g_dashboard_title_image, LV_ALIGN_TOP_MID, 0, 10);
 }
 
 void ui_main_create(void)
@@ -208,11 +270,19 @@ void ui_main_create(void)
     lv_label_set_long_mode(s_title_label, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_font(s_title_label, &lv_font_montserrat_18, 0);
     lv_obj_set_style_text_color(s_title_label, lv_color_hex(0xffffff), 0);
-    lv_obj_align(s_title_label, LV_ALIGN_TOP_LEFT, 18, 10);
+    lv_obj_align(s_title_label, LV_ALIGN_TOP_MID, 0, 10);
 
     s_title_image = lv_image_create(scr);
     lv_obj_add_flag(s_title_image, LV_OBJ_FLAG_HIDDEN);
-    ui_text_image_apply(s_title_image, s_title_label, &g_dashboard_title_image, LV_ALIGN_TOP_LEFT, 18, 10);
+    ui_text_image_apply(s_title_image, s_title_label, &g_dashboard_title_image, LV_ALIGN_TOP_MID, 0, 10);
+
+    s_screen_power_icon = lv_label_create(scr);
+    lv_label_set_text(s_screen_power_icon, LV_SYMBOL_POWER);
+    lv_obj_set_style_text_font(s_screen_power_icon, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(s_screen_power_icon, lv_color_hex(0x46ff8a), 0);
+    lv_obj_align(s_screen_power_icon, LV_ALIGN_TOP_LEFT, 18, 10);
+    lv_obj_add_flag(s_screen_power_icon, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_screen_power_icon, screen_power_event_cb, LV_EVENT_RELEASED, NULL);
 
     s_wifi_icon = lv_label_create(scr);
     lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI);

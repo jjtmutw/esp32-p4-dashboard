@@ -54,6 +54,12 @@ idf.py build
 idf.py -p COM18 flash
 ```
 
+The project keeps ESP-IDF component-manager output out of Git. Board-specific fixes for ESP-Hosted and the Waveshare BSP are stored under `component_patches/` and are applied automatically during CMake configure. If needed, the same step can be run manually:
+
+```powershell
+python tools/apply_component_patches.py
+```
+
 ## Control Commands
 
 Control buttons call:

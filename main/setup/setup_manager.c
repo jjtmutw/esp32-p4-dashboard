@@ -12,6 +12,7 @@
 #include "esp_netif.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
+#include "esp_wifi_default.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
@@ -54,6 +55,12 @@ static bool s_wifi_started;
 static bool s_online;
 static int s_retry_count;
 static char s_setup_ap_ssid[33];
+
+static const esp_netif_ip_info_t s_setup_ap_ip = {
+    .ip = { .addr = ESP_IP4TOADDR(192, 168, 4, 1) },
+    .gw = { .addr = ESP_IP4TOADDR(192, 168, 4, 1) },
+    .netmask = { .addr = ESP_IP4TOADDR(255, 255, 255, 0) },
+};
 
 static bool mac_is_zero(const uint8_t mac[6])
 {
@@ -110,16 +117,7 @@ static void build_fallback_mac(uint8_t mac[6], uint8_t suffix)
 
 static void build_setup_ap_ssid(char *ssid, size_t ssid_size)
 {
-    uint32_t hash = identity_hash();
-    const char *suffix = g_dashboard_device_id[0] != '\0' ? g_dashboard_device_id : "";
-
-    if (suffix[0] != '\0') {
-        snprintf(ssid, ssid_size, "%s-%c%c%c%c", SETUP_AP_SSID_PREFIX,
-                 suffix[4], suffix[5], suffix[6], suffix[7]);
-    } else {
-        snprintf(ssid, ssid_size, "%s-%04lX", SETUP_AP_SSID_PREFIX,
-                 (unsigned long)(hash & 0xffffU));
-    }
+    strlcpy(ssid, SETUP_AP_SSID_PREFIX, ssid_size);
 }
 
 static void stagger_wifi_start(const char *reason)
@@ -312,6 +310,25 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
     }
 }
 
+static esp_netif_t *create_setup_ap_netif(void)
+{
+    esp_netif_inherent_config_t netif_config = {
+        .flags = ESP_NETIF_DHCP_SERVER | ESP_NETIF_FLAG_AUTOUP,
+        .ip_info = &s_setup_ap_ip,
+        .get_ip_event = 0,
+        .lost_ip_event = 0,
+        .if_key = "WIFI_AP_DEF",
+        .if_desc = "setup_ap",
+        .route_prio = 10,
+    };
+
+    esp_netif_t *netif = esp_netif_create_wifi(WIFI_IF_AP, &netif_config);
+    if (netif != NULL) {
+        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_set_default_wifi_ap_handlers());
+    }
+    return netif;
+}
+
 static esp_err_t wifi_init_once(void)
 {
     if (s_wifi_events == NULL) {
@@ -321,7 +338,7 @@ static esp_err_t wifi_init_once(void)
         s_sta_netif = esp_netif_create_default_wifi_sta();
     }
     if (s_ap_netif == NULL) {
-        s_ap_netif = esp_netif_create_default_wifi_ap();
+        s_ap_netif = create_setup_ap_netif();
     }
 
     if (!s_wifi_started) {
@@ -448,4 +465,9 @@ const char *setup_manager_mqtt_uri(void)
 const char *setup_manager_http_publish_url(void)
 {
     return s_runtime_config.http_publish_url[0] ? s_runtime_config.http_publish_url : CONFIG_DASHBOARD_HTTP_PUBLISH_URL;
+}
+
+const char *setup_manager_setup_ap_ssid(void)
+{
+    return s_setup_ap_ssid[0] ? s_setup_ap_ssid : SETUP_AP_SSID_PREFIX;
 }

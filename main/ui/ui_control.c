@@ -5,6 +5,7 @@
 #include "app_config/device_config.h"
 #include "audio/button_feedback.h"
 #include "mqtt/mqtt_client_app.h"
+#include "esp_timer.h"
 #include <string.h>
 
 typedef struct {
@@ -18,6 +19,8 @@ typedef struct {
     lv_obj_t *right_btn;
     lv_obj_t *wide_btn;
     lv_obj_t *wide_label;
+    lv_timer_t *sent_timer;
+    int64_t sent_until_ms;
 } control_card_t;
 
 typedef struct {
@@ -38,7 +41,31 @@ static control_button_ctx_t s_button_ctx[CONTROL_ITEM_COUNT][3];
 static lv_obj_t *s_control_parent;
 
 static void btn_event_cb(lv_event_t *e);
+static int control_item_index(control_item_t *item);
 static void layout_visible_cards(void);
+static bool control_item_is_message(const control_item_t *item);
+
+static int64_t now_ms(void)
+{
+    return esp_timer_get_time() / 1000;
+}
+
+static void sent_timer_cb(lv_timer_t *timer)
+{
+    control_item_t *item = (control_item_t *)lv_timer_get_user_data(timer);
+    int i = control_item_index(item);
+    if (i >= 0) {
+        s_cards[i].sent_timer = NULL;
+        s_cards[i].sent_until_ms = 0;
+        ui_control_refresh_item(item);
+    }
+    lv_timer_delete(timer);
+}
+
+static bool control_item_showing_sent(int i)
+{
+    return i >= 0 && s_cards[i].sent_until_ms > now_ms();
+}
 
 static lv_obj_t *create_command_button(lv_obj_t *card, int w, int h, lv_align_t align,
                                        int x, int y, uint32_t bg_color,
@@ -98,6 +125,9 @@ static void btn_event_cb(lv_event_t *e) {
     }
     button_feedback_beep();
     mqtt_publish_control(ctx->item, ctx->cmd);
+    if (control_item_is_message(ctx->item)) {
+        ui_control_mark_sent(ctx->item);
+    }
 }
 
 static int control_item_index(control_item_t *item)
@@ -113,6 +143,11 @@ static int control_item_index(control_item_t *item)
     return -1;
 }
 
+static bool control_item_is_message(const control_item_t *item)
+{
+    return item != NULL && (strcmp(item->action, "url") == 0 || strcmp(item->action, "message") == 0);
+}
+
 void ui_control_refresh_item(control_item_t *item)
 {
     int i = control_item_index(item);
@@ -121,7 +156,7 @@ void ui_control_refresh_item(control_item_t *item)
     }
 
     bool is_onoff = strcmp(item->action, "onoff") == 0 || strcmp(item->action, "on_off") == 0;
-    bool is_url = strcmp(item->action, "url") == 0 || strcmp(item->action, "message") == 0;
+    bool is_url = control_item_is_message(item);
 
     if (!item->visible) {
         lv_obj_add_flag(s_cards[i].card, LV_OBJ_FLAG_HIDDEN);
@@ -133,9 +168,24 @@ void ui_control_refresh_item(control_item_t *item)
     lv_label_set_text(s_cards[i].subtitle, item->subtitle);
     ui_text_image_apply(s_cards[i].name_image, s_cards[i].name, &item->name_image, LV_ALIGN_TOP_LEFT, 18, 12);
     ui_text_image_apply(s_cards[i].subtitle_image, s_cards[i].subtitle, &item->subtitle_image, LV_ALIGN_TOP_LEFT, 18, 46);
-    lv_label_set_text(s_cards[i].state, item->state ? "ON" : "OFF");
-    lv_obj_set_style_border_color(s_cards[i].card, lv_color_hex(item->state ? 0x22f6b0 : 0x159faf), 0);
-    lv_obj_set_style_text_color(s_cards[i].state, lv_color_hex(item->state ? 0x46ff8a : 0x8cb9c8), 0);
+    if (control_item_showing_sent(i)) {
+        lv_label_set_text(s_cards[i].state, "SENT");
+        lv_obj_clear_flag(s_cards[i].state, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_border_color(s_cards[i].card, lv_color_hex(0x22f6b0), 0);
+        lv_obj_set_style_text_color(s_cards[i].state, lv_color_hex(0x46ff8a), 0);
+        lv_obj_set_style_opa(s_cards[i].state, LV_OPA_COVER, 0);
+    } else if (is_url) {
+        lv_label_set_text(s_cards[i].state, "");
+        lv_obj_set_style_border_color(s_cards[i].card, lv_color_hex(0x159faf), 0);
+        lv_obj_set_style_text_color(s_cards[i].state, lv_color_hex(0x6e8796), 0);
+        lv_obj_set_style_opa(s_cards[i].state, LV_OPA_40, 0);
+    } else {
+        lv_label_set_text(s_cards[i].state, item->state ? "ON" : "OFF");
+        lv_obj_clear_flag(s_cards[i].state, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_border_color(s_cards[i].card, lv_color_hex(item->state ? 0x22f6b0 : 0x159faf), 0);
+        lv_obj_set_style_text_color(s_cards[i].state, lv_color_hex(item->state ? 0x46ff8a : 0x8cb9c8), 0);
+        lv_obj_set_style_opa(s_cards[i].state, LV_OPA_COVER, 0);
+    }
 
     if (is_onoff) {
         ensure_onoff_buttons(i);
@@ -163,6 +213,22 @@ void ui_control_refresh_all(void)
         ui_control_refresh_item(&g_control_items[i]);
     }
     layout_visible_cards();
+}
+
+void ui_control_mark_sent(control_item_t *item)
+{
+    int i = control_item_index(item);
+    if (i < 0 || s_cards[i].card == NULL) {
+        return;
+    }
+
+    s_cards[i].sent_until_ms = now_ms() + 3000;
+    if (s_cards[i].sent_timer == NULL) {
+        s_cards[i].sent_timer = lv_timer_create(sent_timer_cb, 3000, item);
+    } else {
+        lv_timer_reset(s_cards[i].sent_timer);
+    }
+    ui_control_refresh_item(item);
 }
 
 void ui_control_create(lv_obj_t *parent) {
