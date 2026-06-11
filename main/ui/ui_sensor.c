@@ -15,10 +15,24 @@ typedef struct {
     lv_obj_t *value_label;
     lv_obj_t *unit_label;
     lv_obj_t *unit_image;
+    lv_obj_t *line;
 } sensor_card_t;
 
 static sensor_card_t s_cards[SENSOR_ITEM_COUNT];
 static const char *TAG = "ui_sensor";
+static lv_obj_t *s_sensor_parent;
+
+#define SENSOR_CARD_W 218
+#define SENSOR_CARD_H 188
+#define SENSOR_CARD_GAP 12
+#define SENSOR_CARD_TOP_Y 10
+#define SENSOR_COLUMNS 3
+#define SENSOR_CARDS_PER_PAGE 9
+#define SENSOR_PAGE_W 704
+
+static void layout_visible_cards(void);
+static bool sensor_item_configured(const sensor_item_t *item);
+static void sensor_card_set_blank(int i, bool blank);
 
 static bool sensor_matches(const sensor_item_t *item, const char *topic, const char *device_id, const char *key)
 {
@@ -31,6 +45,43 @@ static bool sensor_matches(const sensor_item_t *item, const char *topic, const c
     return item->device_id[0] == '\0' || (device_id != NULL && strcmp(item->device_id, device_id) == 0);
 }
 
+static bool sensor_item_configured(const sensor_item_t *item)
+{
+    return item != NULL &&
+           (item->label[0] != '\0' || item->topic[0] != '\0' ||
+            item->key[0] != '\0' || item->device_id[0] != '\0');
+}
+
+static void sensor_card_set_blank(int i, bool blank)
+{
+    if (i < 0 || i >= SENSOR_ITEM_COUNT || s_cards[i].card == NULL) {
+        return;
+    }
+
+    lv_obj_clear_flag(s_cards[i].card, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_bg_opa(s_cards[i].card, blank ? LV_OPA_TRANSP : LV_OPA_80, 0);
+    lv_obj_set_style_border_opa(s_cards[i].card, blank ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
+
+    lv_obj_t *children[] = {
+        s_cards[i].name_label,
+        s_cards[i].name_image,
+        s_cards[i].value_label,
+        s_cards[i].unit_label,
+        s_cards[i].unit_image,
+        s_cards[i].line,
+    };
+    for (size_t n = 0; n < sizeof(children) / sizeof(children[0]); n++) {
+        if (children[n] == NULL) {
+            continue;
+        }
+        if (blank) {
+            lv_obj_add_flag(children[n], LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_clear_flag(children[n], LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+}
+
 static void refresh_sensor_card(int i)
 {
     if (i < 0 || i >= SENSOR_ITEM_COUNT || s_cards[i].card == NULL) {
@@ -38,11 +89,15 @@ static void refresh_sensor_card(int i)
     }
 
     sensor_item_t *item = &g_sensor_items[i];
-    if (!item->visible) {
+    if (!sensor_item_configured(item)) {
         lv_obj_add_flag(s_cards[i].card, LV_OBJ_FLAG_HIDDEN);
         return;
     }
-    lv_obj_clear_flag(s_cards[i].card, LV_OBJ_FLAG_HIDDEN);
+    if (!item->visible) {
+        sensor_card_set_blank(i, true);
+        return;
+    }
+    sensor_card_set_blank(i, false);
     lv_label_set_text_fmt(s_cards[i].name_label, "%02d  %s", i + 1, item->label);
     lv_label_set_text(s_cards[i].value_label, item->value[0] != '\0' ? item->value : "--");
     lv_label_set_text(s_cards[i].unit_label, item->unit);
@@ -86,13 +141,14 @@ void ui_sensor_refresh_all(void)
     for (int i = 0; i < SENSOR_ITEM_COUNT; i++) {
         refresh_sensor_card(i);
     }
+    layout_visible_cards();
 }
 
 void ui_sensor_create(lv_obj_t *parent)
 {
-    int w = 218, h = 188, gap = 12;
-    int total_w = (w * 3) + (gap * 2);
-    int start_x = (704 - total_w) / 2;
+    int total_w = (SENSOR_CARD_W * SENSOR_COLUMNS) + (SENSOR_CARD_GAP * (SENSOR_COLUMNS - 1));
+    int start_x = (SENSOR_PAGE_W - total_w) / 2;
+    s_sensor_parent = parent;
 
     lv_obj_set_style_pad_all(parent, 0, 0);
     lv_obj_set_style_pad_row(parent, 0, 0);
@@ -103,9 +159,11 @@ void ui_sensor_create(lv_obj_t *parent)
 
     for (int i = 0; i < SENSOR_ITEM_COUNT; i++) {
         lv_obj_t *card = lv_obj_create(parent);
-        lv_obj_set_size(card, w, h);
-        lv_obj_set_pos(card, start_x + (i % 3) * (w + gap), 10 + (i / 3) * (h + gap));
+        lv_obj_set_size(card, SENSOR_CARD_W, SENSOR_CARD_H);
+        lv_obj_set_pos(card, start_x + (i % SENSOR_COLUMNS) * (SENSOR_CARD_W + SENSOR_CARD_GAP),
+                       SENSOR_CARD_TOP_Y + (i / SENSOR_COLUMNS) * (SENSOR_CARD_H + SENSOR_CARD_GAP));
         lv_obj_set_style_bg_color(card, lv_color_hex(0x0b2230), 0);
+        lv_obj_set_style_bg_opa(card, LV_OPA_80, 0);
         lv_obj_set_style_border_color(card, lv_color_hex(0x159faf), 0);
         lv_obj_set_style_radius(card, 8, 0);
         s_cards[i].card = card;
@@ -145,7 +203,48 @@ void ui_sensor_create(lv_obj_t *parent)
         lv_obj_set_style_line_color(line, lv_color_hex(0x21f6ff), 0);
         lv_obj_set_style_line_width(line, 2, 0);
         lv_obj_align(line, LV_ALIGN_BOTTOM_LEFT, 12, -8);
+        s_cards[i].line = line;
 
         refresh_sensor_card(i);
+    }
+    layout_visible_cards();
+}
+
+static void layout_visible_cards(void)
+{
+    if (s_sensor_parent == NULL) {
+        return;
+    }
+
+    int total_w = (SENSOR_CARD_W * SENSOR_COLUMNS) + (SENSOR_CARD_GAP * (SENSOR_COLUMNS - 1));
+    int start_x = (SENSOR_PAGE_W - total_w) / 2;
+    int slot_count = 0;
+    for (int i = 0; i < SENSOR_ITEM_COUNT; i++) {
+        if (s_cards[i].card == NULL) {
+            continue;
+        }
+        if (!sensor_item_configured(&g_sensor_items[i])) {
+            lv_obj_add_flag(s_cards[i].card, LV_OBJ_FLAG_HIDDEN);
+            continue;
+        }
+
+        slot_count = i + 1;
+        lv_obj_set_pos(s_cards[i].card,
+                       start_x + (i % SENSOR_COLUMNS) * (SENSOR_CARD_W + SENSOR_CARD_GAP),
+                       SENSOR_CARD_TOP_Y + (i / SENSOR_COLUMNS) * (SENSOR_CARD_H + SENSOR_CARD_GAP));
+        if (!g_sensor_items[i].visible) {
+            sensor_card_set_blank(i, true);
+        }
+    }
+
+    if (slot_count <= SENSOR_CARDS_PER_PAGE) {
+        lv_obj_set_scroll_snap_y(s_sensor_parent, LV_SCROLL_SNAP_NONE);
+        lv_obj_set_scroll_dir(s_sensor_parent, LV_DIR_NONE);
+        lv_obj_clear_flag(s_sensor_parent, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_scroll_to_y(s_sensor_parent, 0, LV_ANIM_OFF);
+    } else {
+        lv_obj_add_flag(s_sensor_parent, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_scroll_dir(s_sensor_parent, LV_DIR_VER);
+        lv_obj_set_scroll_snap_y(s_sensor_parent, LV_SCROLL_SNAP_START);
     }
 }

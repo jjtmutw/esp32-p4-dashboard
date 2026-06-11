@@ -3,6 +3,7 @@
 #include "ui_control.h"
 #include "ui_sensor.h"
 #include "ui_camera.h"
+#include "ui_background.h"
 #include "ui_text_image.h"
 #include "audio/button_feedback.h"
 #include "app_config/device_config.h"
@@ -258,11 +259,17 @@ void ui_main_set_title(const char *title)
     ui_text_image_apply(s_title_image, s_title_label, &g_dashboard_title_image, LV_ALIGN_TOP_MID, 0, 10);
 }
 
+void ui_main_refresh_background(void)
+{
+    ui_background_refresh();
+}
+
 void ui_main_create(void)
 {
     init_styles();
     lv_obj_t *scr = lv_scr_act();
     lv_obj_add_style(scr, &style_bg, 0);
+    ui_background_create(scr);
 
     s_title_label = lv_label_create(scr);
     lv_label_set_text(s_title_label, g_dashboard_title);
@@ -310,10 +317,24 @@ void ui_main_create(void)
     lv_obj_set_size(tabs, 704, 660);
     lv_obj_align(tabs, LV_ALIGN_BOTTOM_MID, 0, -8);
     lv_obj_set_style_text_font(tabs, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_bg_opa(tabs, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(tabs, 0, 0);
+
+    lv_obj_t *tab_bar = lv_tabview_get_tab_bar(tabs);
+    lv_obj_set_style_bg_color(tab_bar, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_bg_opa(tab_bar, LV_OPA_80, 0);
+    lv_obj_set_style_border_width(tab_bar, 0, 0);
+
+    lv_obj_t *tab_content = lv_tabview_get_content(tabs);
+    lv_obj_set_style_bg_opa(tab_content, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(tab_content, 0, 0);
 
     lv_obj_t *tab1 = lv_tabview_add_tab(tabs, "  Controls  ");
     lv_obj_t *tab2 = lv_tabview_add_tab(tabs, "  Sensors  ");
     lv_obj_t *tab3 = lv_tabview_add_tab(tabs, "  Cameras  ");
+    lv_obj_set_style_bg_opa(tab1, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_bg_opa(tab2, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_bg_opa(tab3, LV_OPA_TRANSP, 0);
 
     ui_control_create(tab1);
     ui_sensor_create(tab2);

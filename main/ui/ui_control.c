@@ -44,6 +44,8 @@ static void btn_event_cb(lv_event_t *e);
 static int control_item_index(control_item_t *item);
 static void layout_visible_cards(void);
 static bool control_item_is_message(const control_item_t *item);
+static bool control_item_configured(const control_item_t *item);
+static void control_card_set_blank(int i, bool blank);
 
 static int64_t now_ms(void)
 {
@@ -148,6 +150,46 @@ static bool control_item_is_message(const control_item_t *item)
     return item != NULL && (strcmp(item->action, "url") == 0 || strcmp(item->action, "message") == 0);
 }
 
+static bool control_item_configured(const control_item_t *item)
+{
+    return item != NULL &&
+           (item->id[0] != '\0' || item->name[0] != '\0' || item->subtitle[0] != '\0' ||
+            item->url[0] != '\0' || item->url_on[0] != '\0' || item->url_off[0] != '\0' ||
+            item->mqtt_topic[0] != '\0' || item->device[0] != '\0');
+}
+
+static void control_card_set_blank(int i, bool blank)
+{
+    if (i < 0 || i >= CONTROL_ITEM_COUNT || s_cards[i].card == NULL) {
+        return;
+    }
+
+    lv_obj_clear_flag(s_cards[i].card, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_bg_opa(s_cards[i].card, blank ? LV_OPA_TRANSP : LV_OPA_80, 0);
+    lv_obj_set_style_border_opa(s_cards[i].card, blank ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
+
+    lv_obj_t *children[] = {
+        s_cards[i].name,
+        s_cards[i].name_image,
+        s_cards[i].subtitle,
+        s_cards[i].subtitle_image,
+        s_cards[i].state,
+        s_cards[i].left_btn,
+        s_cards[i].right_btn,
+        s_cards[i].wide_btn,
+    };
+    for (size_t n = 0; n < sizeof(children) / sizeof(children[0]); n++) {
+        if (children[n] == NULL) {
+            continue;
+        }
+        if (blank) {
+            lv_obj_add_flag(children[n], LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_clear_flag(children[n], LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+}
+
 void ui_control_refresh_item(control_item_t *item)
 {
     int i = control_item_index(item);
@@ -158,11 +200,15 @@ void ui_control_refresh_item(control_item_t *item)
     bool is_onoff = strcmp(item->action, "onoff") == 0 || strcmp(item->action, "on_off") == 0;
     bool is_url = control_item_is_message(item);
 
-    if (!item->visible) {
+    if (!control_item_configured(item)) {
         lv_obj_add_flag(s_cards[i].card, LV_OBJ_FLAG_HIDDEN);
         return;
     }
-    lv_obj_clear_flag(s_cards[i].card, LV_OBJ_FLAG_HIDDEN);
+    if (!item->visible) {
+        control_card_set_blank(i, true);
+        return;
+    }
+    control_card_set_blank(i, false);
 
     lv_label_set_text_fmt(s_cards[i].name, "%02d  %s", i + 1, item->name);
     lv_label_set_text(s_cards[i].subtitle, item->subtitle);
@@ -250,6 +296,7 @@ void ui_control_create(lv_obj_t *parent) {
         lv_obj_set_pos(card, start_x + (i % CONTROL_COLUMNS) * (CONTROL_CARD_W + CONTROL_CARD_GAP),
                        CONTROL_CARD_TOP_Y + (i / CONTROL_COLUMNS) * (CONTROL_CARD_H + CONTROL_CARD_GAP));
         lv_obj_set_style_bg_color(card, lv_color_hex(0x0b2230), 0);
+        lv_obj_set_style_bg_opa(card, LV_OPA_80, 0);
         lv_obj_set_style_border_color(card, lv_color_hex(0x159faf), 0);
         lv_obj_set_style_border_width(card, 1, 0);
         lv_obj_set_style_radius(card, 8, 0);
@@ -308,24 +355,26 @@ static void layout_visible_cards(void)
 
     int total_w = (CONTROL_CARD_W * CONTROL_COLUMNS) + (CONTROL_CARD_GAP * (CONTROL_COLUMNS - 1));
     int start_x = (CONTROL_PAGE_W - total_w) / 2;
-    int visible_index = 0;
+    int slot_count = 0;
     for (int i = 0; i < CONTROL_ITEM_COUNT; i++) {
         if (s_cards[i].card == NULL) {
             continue;
         }
-        if (!g_control_items[i].visible) {
+        if (!control_item_configured(&g_control_items[i])) {
             lv_obj_add_flag(s_cards[i].card, LV_OBJ_FLAG_HIDDEN);
             continue;
         }
 
-        lv_obj_clear_flag(s_cards[i].card, LV_OBJ_FLAG_HIDDEN);
+        slot_count = i + 1;
         lv_obj_set_pos(s_cards[i].card,
-                       start_x + (visible_index % CONTROL_COLUMNS) * (CONTROL_CARD_W + CONTROL_CARD_GAP),
-                       CONTROL_CARD_TOP_Y + (visible_index / CONTROL_COLUMNS) * (CONTROL_CARD_H + CONTROL_CARD_GAP));
-        visible_index++;
+                       start_x + (i % CONTROL_COLUMNS) * (CONTROL_CARD_W + CONTROL_CARD_GAP),
+                       CONTROL_CARD_TOP_Y + (i / CONTROL_COLUMNS) * (CONTROL_CARD_H + CONTROL_CARD_GAP));
+        if (!g_control_items[i].visible) {
+            control_card_set_blank(i, true);
+        }
     }
 
-    if (visible_index <= CONTROL_CARDS_PER_PAGE) {
+    if (slot_count <= CONTROL_CARDS_PER_PAGE) {
         lv_obj_set_scroll_snap_y(s_control_parent, LV_SCROLL_SNAP_NONE);
         lv_obj_set_scroll_dir(s_control_parent, LV_DIR_NONE);
         lv_obj_clear_flag(s_control_parent, LV_OBJ_FLAG_SCROLLABLE);

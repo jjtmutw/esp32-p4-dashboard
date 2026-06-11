@@ -1,5 +1,6 @@
 #pragma once
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include "cJSON.h"
 #include "lvgl.h"
@@ -12,6 +13,8 @@
 #define SENSOR_ITEM_COUNT 12
 #define CAMERA_ITEM_COUNT 4
 #define TEXT_IMAGE_FORMAT_SIZE 12
+#define DASHBOARD_BACKGROUND_FORMAT_SIZE 12
+#define DASHBOARD_BACKGROUND_MIME_SIZE 24
 
 typedef struct {
     bool valid;
@@ -23,6 +26,18 @@ typedef struct {
     uint8_t *data;
     lv_image_dsc_t dsc;
 } dashboard_text_image_t;
+
+typedef struct {
+    bool valid;
+    uint16_t width;
+    uint16_t height;
+    char format[DASHBOARD_BACKGROUND_FORMAT_SIZE];
+    char mime[DASHBOARD_BACKGROUND_MIME_SIZE];
+    char *base64;
+    uint8_t *data;
+    size_t data_size;
+    lv_image_dsc_t dsc;
+} dashboard_background_image_t;
 
 typedef struct {
     char id[32];
@@ -73,6 +88,7 @@ extern sensor_item_t g_sensor_items[SENSOR_ITEM_COUNT];
 extern camera_item_t g_camera_items[CAMERA_ITEM_COUNT];
 extern char g_dashboard_title[DASHBOARD_TITLE_SIZE];
 extern dashboard_text_image_t g_dashboard_title_image;
+extern dashboard_background_image_t g_dashboard_background_image;
 extern char g_dashboard_device_id[DASHBOARD_DEVICE_ID_SIZE];
 extern uint32_t g_dashboard_config_version;
 
@@ -86,3 +102,4 @@ bool control_items_apply_json(const char *json);
 char *dashboard_config_to_json_string(void);
 bool dashboard_config_apply_json(const char *json, bool require_matching_device);
 void dashboard_text_image_free(dashboard_text_image_t *image);
+void dashboard_background_image_free(dashboard_background_image_t *image);

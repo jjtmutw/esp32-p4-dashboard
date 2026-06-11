@@ -4,6 +4,7 @@ idf_component_register(
         "audio/button_feedback.c"
         "board/dashboard_board.c"
         "camera/camera_stream.c"
+        "ui/ui_background.c"
         "ui/ui_main.c"
         "ui/ui_text_image.c"
         "ui/ui_control.c"
@@ -16,4 +17,6 @@ idf_component_register(
         "storage/nvs_config.c"
     INCLUDE_DIRS "." "audio" "board" "camera" "ui" "app_config" "mqtt" "setup" "storage"
     REQUIRES esp_driver_jpeg esp_http_client esp_http_server esp_event esp_mm esp_netif esp_wifi mbedtls mqtt nvs_flash json
+    EMBED_FILES
+        "assets/dashboard_background.rgb565"
 )

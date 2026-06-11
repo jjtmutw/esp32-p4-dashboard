@@ -3,15 +3,32 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "esp_cache.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "libs/tjpgd/tjpgd.h"
 #include "mbedtls/base64.h"
+
+#define DASHBOARD_BACKGROUND_W 720
+#define DASHBOARD_BACKGROUND_H 720
+#define DASHBOARD_BACKGROUND_BASE64_MAX (180U * 1024U)
+#define DASHBOARD_BACKGROUND_JPEG_WORKBUF_SIZE 4096
 
 char g_dashboard_title[DASHBOARD_TITLE_SIZE] = "\x4a\x4a\xe8\xbe\xa6\xe5\x85\xac\xe5\xae\xa4\xe6\x8e\xa7\xe5\x88\xb6\xe5\x99\xa8";
 dashboard_text_image_t g_dashboard_title_image;
+dashboard_background_image_t g_dashboard_background_image;
 char g_dashboard_device_id[DASHBOARD_DEVICE_ID_SIZE] = "";
 uint32_t g_dashboard_config_version = 1;
 static const char *TAG = "device_config";
+
+typedef struct {
+    const uint8_t *data;
+    size_t len;
+    size_t offset;
+    uint8_t *rgb888;
+    int width;
+    int height;
+} config_jpeg_mem_t;
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
@@ -131,9 +148,20 @@ void dashboard_text_image_free(dashboard_text_image_t *image)
     memset(image, 0, sizeof(*image));
 }
 
+void dashboard_background_image_free(dashboard_background_image_t *image)
+{
+    if (image == NULL) {
+        return;
+    }
+    free(image->base64);
+    free(image->data);
+    memset(image, 0, sizeof(*image));
+}
+
 static void dashboard_config_free_text_images(void)
 {
     dashboard_text_image_free(&g_dashboard_title_image);
+    dashboard_background_image_free(&g_dashboard_background_image);
     for (int i = 0; i < CONTROL_ITEM_COUNT; i++) {
         dashboard_text_image_free(&g_control_items[i].name_image);
         dashboard_text_image_free(&g_control_items[i].subtitle_image);
@@ -369,6 +397,281 @@ static void dashboard_text_image_add_json(cJSON *root, const char *key, const da
     cJSON_AddItemToObject(root, key, node);
 }
 
+static size_t config_jpeg_mem_input(JDEC *jd, uint8_t *buff, size_t ndata)
+{
+    config_jpeg_mem_t *ctx = (config_jpeg_mem_t *)jd->device;
+    if (ctx == NULL || ctx->offset >= ctx->len) {
+        return 0;
+    }
+
+    size_t remain = ctx->len - ctx->offset;
+    size_t read_len = ndata < remain ? ndata : remain;
+    if (buff != NULL) {
+        memcpy(buff, ctx->data + ctx->offset, read_len);
+    }
+    ctx->offset += read_len;
+    return read_len;
+}
+
+static int config_jpeg_rgb_output(JDEC *jd, void *bitmap, JRECT *rect)
+{
+    config_jpeg_mem_t *ctx = (config_jpeg_mem_t *)jd->device;
+    if (ctx == NULL || ctx->rgb888 == NULL || rect == NULL || bitmap == NULL) {
+        return 0;
+    }
+
+    int rect_w = (int)rect->right - (int)rect->left + 1;
+    int rect_h = (int)rect->bottom - (int)rect->top + 1;
+    if (rect_w <= 0 || rect_h <= 0 || rect->right >= ctx->width || rect->bottom >= ctx->height) {
+        return 0;
+    }
+
+    const uint8_t *src = (const uint8_t *)bitmap;
+    for (int y = 0; y < rect_h; y++) {
+        uint8_t *dst = ctx->rgb888 + (((int)rect->top + y) * ctx->width + (int)rect->left) * 3;
+        for (int x = 0; x < rect_w; x++) {
+            dst[x * 3 + 0] = src[x * 3 + 2];
+            dst[x * 3 + 1] = src[x * 3 + 1];
+            dst[x * 3 + 2] = src[x * 3 + 0];
+        }
+        src += rect_w * 3;
+    }
+    return 1;
+}
+
+static uint8_t *dashboard_decode_jpeg_rgb888(const uint8_t *jpeg, size_t jpeg_len, int *width, int *height)
+{
+    if (jpeg == NULL || jpeg_len == 0 || width == NULL || height == NULL) {
+        return NULL;
+    }
+
+    config_jpeg_mem_t ctx = {
+        .data = jpeg,
+        .len = jpeg_len,
+    };
+    uint8_t *work = malloc(DASHBOARD_BACKGROUND_JPEG_WORKBUF_SIZE);
+    JDEC *jd = malloc(sizeof(JDEC));
+    if (work == NULL || jd == NULL) {
+        free(work);
+        free(jd);
+        return NULL;
+    }
+
+    JRESULT rc = jd_prepare(jd, config_jpeg_mem_input, work, DASHBOARD_BACKGROUND_JPEG_WORKBUF_SIZE, &ctx);
+    if (rc != JDR_OK || jd->width == 0 || jd->height == 0) {
+        ESP_LOGW(TAG, "background jpeg header failed: %d", rc);
+        free(work);
+        free(jd);
+        return NULL;
+    }
+    if (jd->width > 1200 || jd->height > 1200) {
+        ESP_LOGW(TAG, "background jpeg too large: %ux%u", (unsigned)jd->width, (unsigned)jd->height);
+        free(work);
+        free(jd);
+        return NULL;
+    }
+
+    size_t expected_len = (size_t)jd->width * (size_t)jd->height * 3U;
+    ctx.rgb888 = heap_caps_malloc(expected_len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (ctx.rgb888 == NULL) {
+        ctx.rgb888 = malloc(expected_len);
+    }
+    if (ctx.rgb888 == NULL) {
+        free(work);
+        free(jd);
+        return NULL;
+    }
+    ctx.width = (int)jd->width;
+    ctx.height = (int)jd->height;
+
+    rc = jd_decomp(jd, config_jpeg_rgb_output, 0);
+    free(work);
+    free(jd);
+    if (rc != JDR_OK) {
+        ESP_LOGW(TAG, "background jpeg decode failed: %d", rc);
+        free(ctx.rgb888);
+        return NULL;
+    }
+
+    *width = ctx.width;
+    *height = ctx.height;
+    return ctx.rgb888;
+}
+
+static uint8_t mix_u8(uint8_t a, uint8_t b, uint32_t t)
+{
+    return (uint8_t)((a * (65536U - t) + b * t + 32768U) >> 16);
+}
+
+static uint16_t rgb888_to_rgb565(uint8_t r, uint8_t g, uint8_t b)
+{
+    return (uint16_t)(((uint16_t)(r >> 3) << 11) | ((uint16_t)(g >> 2) << 5) | (uint16_t)(b >> 3));
+}
+
+static bool resize_rgb888_cover_to_rgb565(const uint8_t *src, int src_w, int src_h, uint8_t *dst_buf,
+                                          int out_w, int out_h)
+{
+    if (src == NULL || dst_buf == NULL || src_w <= 0 || src_h <= 0 || out_w <= 0 || out_h <= 0) {
+        return false;
+    }
+
+    int crop_x = 0;
+    int crop_y = 0;
+    int crop_w = src_w;
+    int crop_h = src_h;
+    if ((int64_t)src_w * out_h > (int64_t)src_h * out_w) {
+        crop_w = (int)((int64_t)src_h * out_w / out_h);
+        crop_x = (src_w - crop_w) / 2;
+    } else if ((int64_t)src_w * out_h < (int64_t)src_h * out_w) {
+        crop_h = (int)((int64_t)src_w * out_h / out_w);
+        crop_y = (src_h - crop_h) / 2;
+    }
+
+    uint16_t *dst = (uint16_t *)dst_buf;
+    uint32_t step_x = out_w > 1 ? (uint32_t)(((uint64_t)(crop_w - 1) << 16) / (uint32_t)(out_w - 1)) : 0;
+    uint32_t step_y = out_h > 1 ? (uint32_t)(((uint64_t)(crop_h - 1) << 16) / (uint32_t)(out_h - 1)) : 0;
+
+    for (int y = 0; y < out_h; y++) {
+        uint32_t src_y_fp = (uint32_t)y * step_y;
+        int y0 = crop_y + (int)(src_y_fp >> 16);
+        int y1 = y0 + 1 < crop_y + crop_h ? y0 + 1 : y0;
+        uint32_t fy = src_y_fp & 0xffffU;
+
+        for (int x = 0; x < out_w; x++) {
+            uint32_t src_x_fp = (uint32_t)x * step_x;
+            int x0 = crop_x + (int)(src_x_fp >> 16);
+            int x1 = x0 + 1 < crop_x + crop_w ? x0 + 1 : x0;
+            uint32_t fx = src_x_fp & 0xffffU;
+
+            const uint8_t *p00 = src + ((y0 * src_w + x0) * 3);
+            const uint8_t *p01 = src + ((y0 * src_w + x1) * 3);
+            const uint8_t *p10 = src + ((y1 * src_w + x0) * 3);
+            const uint8_t *p11 = src + ((y1 * src_w + x1) * 3);
+
+            uint8_t rt = mix_u8(p00[0], p01[0], fx);
+            uint8_t gt = mix_u8(p00[1], p01[1], fx);
+            uint8_t bt = mix_u8(p00[2], p01[2], fx);
+            uint8_t rb = mix_u8(p10[0], p11[0], fx);
+            uint8_t gb = mix_u8(p10[1], p11[1], fx);
+            uint8_t bb = mix_u8(p10[2], p11[2], fx);
+
+            dst[y * out_w + x] = rgb888_to_rgb565(mix_u8(rt, rb, fy), mix_u8(gt, gb, fy), mix_u8(bt, bb, fy));
+        }
+    }
+    return true;
+}
+
+static bool dashboard_background_image_apply_json(dashboard_background_image_t *image, cJSON *root)
+{
+    if (image == NULL || root == NULL || !cJSON_IsObject(root)) {
+        return false;
+    }
+
+    cJSON *format_node = cJSON_GetObjectItemCaseSensitive(root, "format");
+    cJSON *mime_node = cJSON_GetObjectItemCaseSensitive(root, "mime");
+    cJSON *data_node = cJSON_GetObjectItemCaseSensitive(root, "image_base64");
+    if (data_node == NULL) {
+        data_node = cJSON_GetObjectItemCaseSensitive(root, "data");
+    }
+    if (data_node == NULL) {
+        data_node = cJSON_GetObjectItemCaseSensitive(root, "base64");
+    }
+
+    const char *format = cJSON_IsString(format_node) ? format_node->valuestring : "jpeg";
+    const char *mime = cJSON_IsString(mime_node) ? mime_node->valuestring : "image/jpeg";
+    const char *base64 = cJSON_IsString(data_node) ? data_node->valuestring : NULL;
+    if (base64 == NULL || base64[0] == '\0' || strlen(base64) > DASHBOARD_BACKGROUND_BASE64_MAX) {
+        ESP_LOGW(TAG, "background image missing or too large");
+        return false;
+    }
+    if (strcmp(format, "jpeg") != 0 && strcmp(format, "jpg") != 0 && strcmp(mime, "image/jpeg") != 0) {
+        ESP_LOGW(TAG, "unsupported background format=%s mime=%s", format, mime);
+        return false;
+    }
+
+    uint8_t *jpeg = NULL;
+    size_t jpeg_len = 0;
+    if (!decode_base64_alloc(base64, &jpeg, &jpeg_len)) {
+        ESP_LOGW(TAG, "background base64 decode failed");
+        return false;
+    }
+
+    int src_w = 0;
+    int src_h = 0;
+    uint8_t *rgb888 = dashboard_decode_jpeg_rgb888(jpeg, jpeg_len, &src_w, &src_h);
+    free(jpeg);
+    if (rgb888 == NULL) {
+        return false;
+    }
+
+    size_t out_len = (size_t)DASHBOARD_BACKGROUND_W * DASHBOARD_BACKGROUND_H * 2U;
+    uint8_t *rgb565 = heap_caps_malloc(out_len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (rgb565 == NULL) {
+        rgb565 = malloc(out_len);
+    }
+    if (rgb565 == NULL) {
+        free(rgb888);
+        return false;
+    }
+
+    bool ok = resize_rgb888_cover_to_rgb565(rgb888, src_w, src_h, rgb565,
+                                            DASHBOARD_BACKGROUND_W, DASHBOARD_BACKGROUND_H);
+    free(rgb888);
+    if (!ok) {
+        free(rgb565);
+        return false;
+    }
+    esp_cache_msync(rgb565, out_len, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+
+    char *base64_copy = copy_dynamic_string(base64);
+    if (base64_copy == NULL) {
+        free(rgb565);
+        return false;
+    }
+
+    dashboard_background_image_free(image);
+    image->base64 = base64_copy;
+    image->data = rgb565;
+    image->data_size = out_len;
+    image->valid = true;
+    image->width = DASHBOARD_BACKGROUND_W;
+    image->height = DASHBOARD_BACKGROUND_H;
+    strlcpy(image->format, "jpeg", sizeof(image->format));
+    strlcpy(image->mime, "image/jpeg", sizeof(image->mime));
+
+    memset(&image->dsc, 0, sizeof(image->dsc));
+    image->dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+    image->dsc.header.w = image->width;
+    image->dsc.header.h = image->height;
+    image->dsc.header.cf = LV_COLOR_FORMAT_RGB565;
+    image->dsc.header.stride = image->width * 2;
+    image->dsc.data_size = image->data_size;
+    image->dsc.data = image->data;
+    ESP_LOGI(TAG, "background image decoded: jpeg=%u source=%dx%d display=%ux%u",
+             (unsigned)jpeg_len, src_w, src_h, image->width, image->height);
+    return true;
+}
+
+static void dashboard_background_image_add_json(cJSON *root, const char *key,
+                                                const dashboard_background_image_t *image)
+{
+    if (root == NULL || key == NULL || image == NULL || !image->valid || image->base64 == NULL) {
+        return;
+    }
+
+    cJSON *node = cJSON_CreateObject();
+    if (node == NULL) {
+        return;
+    }
+    cJSON_AddStringToObject(node, "format", image->format[0] != '\0' ? image->format : "jpeg");
+    cJSON_AddStringToObject(node, "mime", image->mime[0] != '\0' ? image->mime : "image/jpeg");
+    cJSON_AddNumberToObject(node, "width", image->width);
+    cJSON_AddNumberToObject(node, "height", image->height);
+    cJSON_AddStringToObject(node, "fit", "cover");
+    cJSON_AddStringToObject(node, "image_base64", image->base64);
+    cJSON_AddItemToObject(root, key, node);
+}
+
 static cJSON *control_item_to_json(const control_item_t *item)
 {
     cJSON *root = cJSON_CreateObject();
@@ -436,6 +739,28 @@ static cJSON *camera_item_to_json(const camera_item_t *item)
     cJSON_AddStringToObject(root, "url", item->url);
     cJSON_AddBoolToObject(root, "visible", item->visible);
     return root;
+}
+
+static bool control_item_is_configured(const control_item_t *item)
+{
+    return item != NULL &&
+           (item->id[0] != '\0' || item->name[0] != '\0' || item->subtitle[0] != '\0' ||
+            item->url[0] != '\0' || item->url_on[0] != '\0' || item->url_off[0] != '\0' ||
+            item->mqtt_topic[0] != '\0' || item->device[0] != '\0');
+}
+
+static bool sensor_item_is_configured(const sensor_item_t *item)
+{
+    return item != NULL &&
+           (item->label[0] != '\0' || item->topic[0] != '\0' || item->key[0] != '\0' ||
+            item->device_id[0] != '\0');
+}
+
+static bool camera_item_is_configured(const camera_item_t *item)
+{
+    return item != NULL &&
+           (item->label[0] != '\0' || item->topic[0] != '\0' ||
+            item->device_id[0] != '\0' || item->url[0] != '\0');
 }
 
 void dashboard_config_set_device_id(const char *device_id)
@@ -571,6 +896,7 @@ static void control_item_reset(control_item_t *item)
 static void log_dashboard_config_summary(void)
 {
     ESP_LOGI(TAG, "config version=%lu title=%s", (unsigned long)g_dashboard_config_version, g_dashboard_title);
+    ESP_LOGI(TAG, "background=%s", g_dashboard_background_image.valid ? "json" : "fallback");
     for (int i = 0; i < CONTROL_ITEM_COUNT; i++) {
         if (g_control_items[i].visible) {
             ESP_LOGI(TAG, "control[%d] name=%s action=%s url=%s urlon=%s urloff=%s",
@@ -602,7 +928,7 @@ char *control_items_to_json_string(void)
     }
 
     for (int i = 0; i < CONTROL_ITEM_COUNT; i++) {
-        if (!g_control_items[i].visible) {
+        if (!control_item_is_configured(&g_control_items[i])) {
             continue;
         }
         cJSON *item = control_item_to_json(&g_control_items[i]);
@@ -669,10 +995,11 @@ char *dashboard_config_to_json_string(void)
     cJSON_AddNumberToObject(root, "version", g_dashboard_config_version);
     cJSON_AddStringToObject(root, "title", g_dashboard_title);
     dashboard_text_image_add_json(root, "title_image", &g_dashboard_title_image);
+    dashboard_background_image_add_json(root, "background_image", &g_dashboard_background_image);
 
     cJSON *controls = cJSON_AddArrayToObject(root, "controls");
     for (int i = 0; i < CONTROL_ITEM_COUNT; i++) {
-        if (!g_control_items[i].visible) {
+        if (!control_item_is_configured(&g_control_items[i])) {
             continue;
         }
         add_array_item(controls, control_item_to_json(&g_control_items[i]));
@@ -680,7 +1007,7 @@ char *dashboard_config_to_json_string(void)
 
     cJSON *sensors = cJSON_AddArrayToObject(root, "sensors");
     for (int i = 0; i < SENSOR_ITEM_COUNT; i++) {
-        if (!g_sensor_items[i].visible) {
+        if (!sensor_item_is_configured(&g_sensor_items[i])) {
             continue;
         }
         add_array_item(sensors, sensor_item_to_json(&g_sensor_items[i]));
@@ -688,7 +1015,7 @@ char *dashboard_config_to_json_string(void)
 
     cJSON *cameras = cJSON_AddArrayToObject(root, "cameras");
     for (int i = 0; i < CAMERA_ITEM_COUNT; i++) {
-        if (!g_camera_items[i].visible) {
+        if (!camera_item_is_configured(&g_camera_items[i])) {
             continue;
         }
         add_array_item(cameras, camera_item_to_json(&g_camera_items[i]));
@@ -727,10 +1054,13 @@ bool dashboard_config_apply_json(const char *json, bool require_matching_device)
     dashboard_config_free_text_images();
     copy_json_string_any(root, "title", NULL, g_dashboard_title, sizeof(g_dashboard_title));
     dashboard_text_image_apply_json(&g_dashboard_title_image, cJSON_GetObjectItemCaseSensitive(root, "title_image"));
+    dashboard_background_image_apply_json(&g_dashboard_background_image,
+                                          cJSON_GetObjectItemCaseSensitive(root, "background_image"));
 
     cJSON *controls = cJSON_GetObjectItemCaseSensitive(root, "controls");
     if (cJSON_IsArray(controls)) {
         for (int i = 0; i < CONTROL_ITEM_COUNT; i++) {
+            control_item_reset(&g_control_items[i]);
             g_control_items[i].visible = false;
         }
         cJSON *node = NULL;
@@ -756,7 +1086,7 @@ bool dashboard_config_apply_json(const char *json, bool require_matching_device)
     cJSON *sensors = cJSON_GetObjectItemCaseSensitive(root, "sensors");
     if (cJSON_IsArray(sensors)) {
         for (int i = 0; i < SENSOR_ITEM_COUNT; i++) {
-            g_sensor_items[i].visible = false;
+            memset(&g_sensor_items[i], 0, sizeof(g_sensor_items[i]));
         }
         cJSON *node = NULL;
         int index = 0;
@@ -777,7 +1107,7 @@ bool dashboard_config_apply_json(const char *json, bool require_matching_device)
     cJSON *cameras = cJSON_GetObjectItemCaseSensitive(root, "cameras");
     if (cJSON_IsArray(cameras)) {
         for (int i = 0; i < CAMERA_ITEM_COUNT; i++) {
-            g_camera_items[i].visible = false;
+            memset(&g_camera_items[i], 0, sizeof(g_camera_items[i]));
         }
         cJSON *node = NULL;
         int index = 0;

@@ -417,7 +417,7 @@
     .device-preview {
       width: min(720px, 100%);
       aspect-ratio: 1 / 1;
-      background: #101923;
+      background: #101923 var(--dashboard-bg, none) center / cover no-repeat;
       border: 10px solid #18232f;
       border-radius: 8px;
       box-shadow: 0 24px 50px rgba(21, 32, 43, 0.25);
@@ -433,7 +433,7 @@
       justify-content: space-between;
       padding: 0 22px;
       color: #fff;
-      background: #1f2934;
+      background: rgba(31, 41, 52, 0.88);
       font-weight: 800;
       font-size: 18px;
     }
@@ -450,7 +450,7 @@
       display: grid;
       grid-template-columns: repeat(3, 1fr);
       height: 62px;
-      background: #fff;
+      background: rgba(255, 255, 255, 0.88);
       border-bottom: 1px solid #d6e1ec;
     }
 
@@ -471,7 +471,7 @@
 
     .screen-content {
       flex: 1;
-      background: #f4f8fb;
+      background: rgba(244, 248, 251, 0.18);
       padding: 18px;
       overflow: hidden;
     }
@@ -495,7 +495,7 @@
 
     .dash-card {
       border-radius: 8px;
-      background: #fff;
+      background: rgba(255, 255, 255, 0.86);
       border: 1px solid #d8e3ed;
       box-shadow: 0 8px 20px rgba(21, 32, 43, 0.10);
       padding: 14px;
@@ -506,6 +506,11 @@
 
     .dash-card.dim {
       opacity: 0.45;
+    }
+
+    .dash-slot {
+      min-width: 0;
+      min-height: 0;
     }
 
     .dash-name {
@@ -694,6 +699,14 @@
               <label for="title">標題列</label>
               <input id="title" autocomplete="off">
             </div>
+            <div class="field full">
+              <label for="backgroundFile">Background image</label>
+              <input id="backgroundFile" type="file" accept="image/png,image/jpeg">
+              <div class="actions">
+                <button class="btn" type="button" id="clearBackgroundBtn">Clear background</button>
+              </div>
+              <p class="sub" id="backgroundHint">JSON background: none</p>
+            </div>
           </div>
         </section>
 
@@ -762,7 +775,7 @@
       </div>
 
       <div class="preview-wrap">
-        <div class="device-preview">
+        <div id="devicePreview" class="device-preview">
           <div class="screen-bar">
             <div id="previewTitle">JJ辦公室控制器</div>
             <div class="screen-status"><span>WiFi</span><span>MQTT</span><span>⚙</span></div>
@@ -952,6 +965,7 @@
         request_topic: "jj/dashboard/config/request",
         response_prefix: "jj/dashboard/config"
       },
+      background_image: null,
       controls: [
         {
           id: "greenhouse_light",
@@ -1034,6 +1048,10 @@
       mqttId: document.getElementById("mqttId"),
       mqttPassword: document.getElementById("mqttPassword"),
       configTopic: document.getElementById("configTopic"),
+      backgroundFile: document.getElementById("backgroundFile"),
+      clearBackgroundBtn: document.getElementById("clearBackgroundBtn"),
+      backgroundHint: document.getElementById("backgroundHint"),
+      devicePreview: document.getElementById("devicePreview"),
       previewTitle: document.getElementById("previewTitle"),
       dashboardPreview: document.getElementById("dashboardPreview"),
       jsonOutput: document.getElementById("jsonOutput"),
@@ -1060,6 +1078,7 @@
       next.mqtt.mqtt_password = safeString(input.mqtt?.mqtt_password || input.mqtt?.password || input.mqtt_password, "");
       next.mqtt.request_topic = safeString(input.mqtt?.request_topic, next.mqtt.request_topic);
       next.mqtt.response_prefix = safeString(input.mqtt?.response_prefix, next.mqtt.response_prefix);
+      next.background_image = normalizeBackgroundImage(input.background_image);
       next.controls = Array.isArray(input.controls) ? input.controls.slice(0, LIMITS.controls).map(normalizeControl) : [];
       next.sensors = Array.isArray(input.sensors) ? input.sensors.slice(0, LIMITS.sensors).map(normalizeSensor) : [];
       next.cameras = Array.isArray(input.cameras) ? input.cameras.slice(0, LIMITS.cameras).map(normalizeCamera) : [];
@@ -1109,6 +1128,20 @@
       };
     }
 
+    function normalizeBackgroundImage(input) {
+      if (!input || typeof input !== "object") return null;
+      const imageBase64 = safeString(input.image_base64 || input.data || input.base64, "");
+      if (!imageBase64) return null;
+      return {
+        format: safeString(input.format, "jpeg"),
+        mime: safeString(input.mime, "image/jpeg"),
+        width: Number(input.width || 720),
+        height: Number(input.height || 720),
+        fit: safeString(input.fit, "cover"),
+        image_base64: imageBase64
+      };
+    }
+
     function safeString(value, fallback = "") {
       return typeof value === "string" ? value : fallback;
     }
@@ -1150,6 +1183,72 @@
         state.mqtt.mqtt_password = els.mqttPassword.value;
         render();
       });
+      els.backgroundFile.addEventListener("change", async event => {
+        const file = event.target.files[0];
+        if (file) {
+          try {
+            state.background_image = await makeBackgroundImage(file);
+            render();
+            setStatus(`Background image added: ${Math.round(state.background_image.image_base64.length / 1024)} KB base64`, "ok");
+          } catch (error) {
+            setStatus(`Background image failed: ${error.message}`, "error");
+          }
+        }
+        event.target.value = "";
+      });
+      els.clearBackgroundBtn.addEventListener("click", () => {
+        state.background_image = null;
+        render();
+      });
+    }
+
+    function readImageFile(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error("Cannot read image"));
+        reader.onload = () => {
+          const image = new Image();
+          image.onerror = () => reject(new Error("Cannot decode image"));
+          image.onload = () => resolve(image);
+          image.src = reader.result;
+        };
+        reader.readAsDataURL(file);
+      });
+    }
+
+    async function makeBackgroundImage(file) {
+      const image = await readImageFile(file);
+      const size = 720;
+      const canvas = document.createElement("canvas");
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext("2d", { alpha: false });
+      ctx.fillStyle = "#101923";
+      ctx.fillRect(0, 0, size, size);
+      const scale = Math.max(size / image.naturalWidth, size / image.naturalHeight);
+      const drawW = image.naturalWidth * scale;
+      const drawH = image.naturalHeight * scale;
+      const drawX = (size - drawW) / 2;
+      const drawY = (size - drawH) / 2;
+      ctx.drawImage(image, drawX, drawY, drawW, drawH);
+
+      const qualities = [0.62, 0.56, 0.5, 0.44, 0.38];
+      let dataUrl = "";
+      for (const quality of qualities) {
+        dataUrl = canvas.toDataURL("image/jpeg", quality);
+        const base64 = dataUrl.split(",")[1] || "";
+        if (base64.length < 96000 || quality === qualities[qualities.length - 1]) {
+          return {
+            format: "jpeg",
+            mime: "image/jpeg",
+            width: size,
+            height: size,
+            fit: "cover",
+            image_base64: base64
+          };
+        }
+      }
+      throw new Error("Cannot compress image");
     }
 
     function setActiveSection(section) {
@@ -1221,6 +1320,7 @@
         },
         mqtt_id: state.mqtt.mqtt_id,
         mqtt_password: state.mqtt.mqtt_password,
+        background_image: state.background_image ? clone(state.background_image) : undefined,
         controls: state.controls.map(toControlJson),
         sensors: state.sensors.map(toSensorJson),
         cameras: state.cameras.map(toCameraJson)
@@ -1462,6 +1562,14 @@
       setValue(els.configTopic, topic);
       els.previewTitle.textContent = state.title || "JJ辦公室控制器";
       els.fileNameHint.textContent = `config/devices/${state.device_id || "device_id"}.json`;
+      if (state.background_image?.image_base64) {
+        const mime = state.background_image.mime || "image/jpeg";
+        els.devicePreview.style.setProperty("--dashboard-bg", `url(data:${mime};base64,${state.background_image.image_base64})`);
+        els.backgroundHint.textContent = `JSON background: ${Math.round(state.background_image.image_base64.length / 1024)} KB base64`;
+      } else {
+        els.devicePreview.style.setProperty("--dashboard-bg", "none");
+        els.backgroundHint.textContent = "JSON background: none";
+      }
       const valid = idPattern.test(state.device_id);
       els.deviceValidity.textContent = valid ? "OK" : "8 位英數";
       els.deviceValidity.style.color = valid ? "var(--ok)" : "var(--danger)";
@@ -1482,11 +1590,17 @@
     }
 
     function renderPreview() {
-      const list = state[activeSection].filter(item => item.visible !== false);
+      const list = state[activeSection];
       els.dashboardPreview.className = `preview-grid ${activeSection}`;
       els.dashboardPreview.innerHTML = "";
-      const maxItems = activeSection === "cameras" ? 1 : 12;
+      const maxItems = activeSection === "cameras" ? 1 : 9;
       list.slice(0, maxItems).forEach(item => {
+        if (item.visible === false) {
+          const slot = document.createElement("div");
+          slot.className = "dash-slot";
+          els.dashboardPreview.appendChild(slot);
+          return;
+        }
         const card = document.createElement("div");
         card.className = "dash-card";
         if (activeSection === "controls") {

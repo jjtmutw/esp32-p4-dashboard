@@ -303,6 +303,7 @@ static void handle_dashboard_config_json(const char *json, int len)
         applied = dashboard_config_apply_json(payload, true);
         if (applied) {
             ui_main_set_title(g_dashboard_title);
+            ui_main_refresh_background();
             ui_control_refresh_all();
             ui_sensor_refresh_all();
             ui_camera_refresh_all();
